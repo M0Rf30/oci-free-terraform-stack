@@ -13,9 +13,6 @@ packages:
   - device-mapper-persistent-data
   - lvm2
   - bzip2
-%{ if wg_enabled ~}
-  - wireguard-tools
-%{ endif ~}
 
 groups:
   - docker
@@ -67,10 +64,13 @@ write_files:
 %{ endif ~}
 
 runcmd:
-  - grubby --update-kernel ALL
+  - grubby --update-kernel ALL || true
   - dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
   - dnf update -y
   - dnf install epel-release -y
+%{ if wg_enabled ~}
+  - dnf install -y wireguard-tools
+%{ endif ~}
   - dnf install docker-ce docker-ce-cli containerd.io -y
   - dnf install -y docker-compose-plugin
   - docker compose --version
