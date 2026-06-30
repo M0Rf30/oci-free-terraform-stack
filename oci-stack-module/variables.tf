@@ -40,16 +40,49 @@ variable "vm_name" {
 }
 
 variable "vm_image_ocid_ampere" {
-  description = "The OCID of the Oracle Linux 9 image for Ampere architecture"
+  description = "Override OCID for the Oracle Linux 9 image (Ampere/aarch64); empty = auto-select latest"
   type        = string
+  default     = ""
 }
 
 variable "vm_image_ocid_x86_64" {
-  description = "The OCID of the Oracle Linux 9 image for x86_64 architecture"
+  description = "Override OCID for the Oracle Linux 9 image (x86_64); empty = auto-select latest"
   type        = string
+  default     = ""
 }
 
 variable "ssh_public_key" {
   description = "The public key for SSH access to instances"
   type        = string
+}
+
+# --- WireGuard relay (optional) -------------------------------------------
+variable "wg_client_pubkey" {
+  description = "Base64 WireGuard public key of the home peer; empty disables the relay"
+  type        = string
+  default     = ""
+}
+
+variable "wg_listen_port" {
+  description = "UDP port the WireGuard relay listens on"
+  type        = number
+  default     = 51820
+}
+
+variable "bt_port" {
+  description = "TCP+UDP BitTorrent port forwarded through the relay to the home peer"
+  type        = number
+  default     = 11899
+}
+
+variable "wg_server_address" {
+  description = "Relay address inside the tunnel (CIDR)"
+  type        = string
+  default     = "10.200.0.1/24"
+}
+
+variable "wg_client_address" {
+  description = "Home-peer address inside the tunnel (host, no CIDR)"
+  type        = string
+  default     = "10.200.0.2"
 }

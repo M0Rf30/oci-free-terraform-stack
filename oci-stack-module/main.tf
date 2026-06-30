@@ -12,22 +12,49 @@ terraform {
 
 # Configure the Oracle Cloud Infrastructure (OCI) provider with necessary credentials and region.
 provider "oci" {
-  tenancy_ocid          = var.tenancy_ocid
-  user_ocid             = var.user_ocid
-  private_key_path      = var.private_key_path
-  fingerprint           = var.fingerprint
-  region                = var.region
+  tenancy_ocid     = var.tenancy_ocid
+  user_ocid        = var.user_ocid
+  private_key_path = var.private_key_path
+  fingerprint      = var.fingerprint
+  region           = var.region
 }
 
 # Define local variables for cloud-init template files.
 locals {
   a1_cloud_init_template_file = "${path.module}/templates/a1-cloud-init.yaml.tpl"
   e2_cloud_init_template_file = "${path.module}/templates/e2-cloud-init.yaml.tpl"
+
+  # Use an explicit image OCID when provided, otherwise the latest Oracle Linux 9
+  # platform image for the shape in this region (image OCIDs are region-specific).
+  image_ocid_ampere = var.vm_image_ocid_ampere != "" ? var.vm_image_ocid_ampere : data.oci_core_images.ampere.images[0].id
+  image_ocid_x86_64 = var.vm_image_ocid_x86_64 != "" ? var.vm_image_ocid_x86_64 : data.oci_core_images.x86_64.images[0].id
+
+  # Whether to provision the A1 instance as a WireGuard relay.
+  wg_enabled = var.wg_client_pubkey != ""
 }
 
 # Fetch availability domain information for the specified compartment.
 data "oci_identity_availability_domains" "ads" {
   compartment_id = var.tenancy_ocid
+}
+
+# Latest Oracle Linux 9 platform images per shape (used when no override is set).
+data "oci_core_images" "ampere" {
+  compartment_id           = var.tenancy_ocid
+  operating_system         = "Oracle Linux"
+  operating_system_version = "9"
+  shape                    = "VM.Standard.A1.Flex"
+  sort_by                  = "TIMECREATED"
+  sort_order               = "DESC"
+}
+
+data "oci_core_images" "x86_64" {
+  compartment_id           = var.tenancy_ocid
+  operating_system         = "Oracle Linux"
+  operating_system_version = "9"
+  shape                    = "VM.Standard.E2.1.Micro"
+  sort_by                  = "TIMECREATED"
+  sort_order               = "DESC"
 }
 
 # Fetch boot volume information for instances in the availability domain.
@@ -54,10 +81,10 @@ module "vcn" {
   vcn_name       = "ocistack"
   vcn_dns_label  = "ocistackdns"
 
-  create_internet_gateway  = true
-  create_nat_gateway       = false
-  create_service_gateway   = false
-  vcn_cidrs                = ["10.0.0.0/16"]
+  create_internet_gateway = true
+  create_nat_gateway      = false
+  create_service_gateway  = false
+  vcn_cidrs               = ["10.0.0.0/16"]
 }
 
 # Configure DHCP options for the VCN.
@@ -122,6 +149,48 @@ resource "oci_core_security_list" "public-security-list" {
     tcp_options {
       min = 22
       max = 22
+    }
+  }
+
+  # WireGuard relay (UDP). Always open; harmless when the relay is disabled.
+  ingress_security_rules {
+    stateless   = false
+    source      = "0.0.0.0/0"
+    source_type = "CIDR_BLOCK"
+    protocol    = "17"
+    description = "WireGuard"
+
+    udp_options {
+      min = var.wg_listen_port
+      max = var.wg_listen_port
+    }
+  }
+
+  # BitTorrent inbound forwarded to the home peer over the tunnel (TCP).
+  ingress_security_rules {
+    stateless   = false
+    source      = "0.0.0.0/0"
+    source_type = "CIDR_BLOCK"
+    protocol    = "6"
+    description = "BitTorrent TCP"
+
+    tcp_options {
+      min = var.bt_port
+      max = var.bt_port
+    }
+  }
+
+  # BitTorrent inbound forwarded to the home peer over the tunnel (uTP/UDP).
+  ingress_security_rules {
+    stateless   = false
+    source      = "0.0.0.0/0"
+    source_type = "CIDR_BLOCK"
+    protocol    = "17"
+    description = "BitTorrent uTP"
+
+    udp_options {
+      min = var.bt_port
+      max = var.bt_port
     }
   }
 
@@ -220,7 +289,14 @@ resource "oci_core_instance" "vm_instance_ampere" {
 
   metadata = {
     ssh_authorized_keys = var.ssh_public_key
-    user_data = "${base64encode(file("${local.a1_cloud_init_template_file}"))}"
+    user_data = base64encode(templatefile(local.a1_cloud_init_template_file, {
+      wg_enabled        = local.wg_enabled
+      wg_listen_port    = var.wg_listen_port
+      wg_server_address = var.wg_server_address
+      wg_client_address = var.wg_client_address
+      wg_client_pubkey  = var.wg_client_pubkey
+      bt_port           = var.bt_port
+    }))
   }
 
   agent_config {
@@ -230,7 +306,7 @@ resource "oci_core_instance" "vm_instance_ampere" {
   }
 
   source_details {
-    source_id   = var.vm_image_ocid_ampere
+    source_id   = local.image_ocid_ampere
     source_type = "image"
   }
 
@@ -261,7 +337,7 @@ resource "oci_core_instance" "vm_instance_x86_64" {
 
   metadata = {
     ssh_authorized_keys = var.ssh_public_key
-    user_data = "${base64encode(file("${local.e2_cloud_init_template_file}"))}"
+    user_data           = base64encode(file(local.e2_cloud_init_template_file))
   }
 
   agent_config {
@@ -271,7 +347,7 @@ resource "oci_core_instance" "vm_instance_x86_64" {
   }
 
   source_details {
-    source_id   = var.vm_image_ocid_x86_64
+    source_id   = local.image_ocid_x86_64
     source_type = "image"
   }
 
@@ -313,9 +389,9 @@ resource "oci_core_volume_attachment" "extra_volume_attachment" {
 
 # Backup Policy
 resource "oci_core_volume_backup_policy" "backup_policy" {
-  count = 3
+  count          = 3
   compartment_id = oci_identity_compartment.oci_stack.id
-  display_name = format("Daily %d", count.index)
+  display_name   = format("Daily %d", count.index)
 
   schedules {
     backup_type       = "INCREMENTAL"

@@ -4,9 +4,31 @@ name: "Execute OCI Pipeline"
 
 on:
   workflow_dispatch:
+    inputs:
+      action:
+        description: "Terraform action to run"
+        type: choice
+        default: "apply"
+        options:
+          - plan
+          - apply
+          - destroy
 
 permissions:
   contents: read
+
+concurrency:
+  # Never let two state-mutating runs race on the same remote state.
+  group: oci-terraform
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  # OCI Object Storage S3-compatible credentials (an OCI Customer Secret Key)
+  # used only by the Terraform S3 state backend.
+  AWS_ACCESS_KEY_ID: ${{ secrets.OCI_S3_ACCESS_KEY }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
 
 jobs:
   terraform:
@@ -22,48 +44,77 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: "24"
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
-          terraform_version: latest
+          terraform_version: "1.15.6"
+          terraform_wrapper: false
 
-      - name: Setup SSH Private Key
+      - name: Write OCI API signing key
         run: |
-          echo "${{ secrets.PKEY }}" > pkey.pem
-          chmod 600 pkey.pem
-          echo "TF_VAR_pkey_path=$(pwd)/pkey.pem" >> $GITHUB_ENV
+          umask 077
+          printf '%s\n' "${{ secrets.PKEY }}" > pkey.pem
+          # Normalise potential CRLF from the secret store.
+          sed -i 's/\r$//' pkey.pem
+          echo "TF_VAR_pkey_path=$(pwd)/pkey.pem" >> "$GITHUB_ENV"
 
-      - name: Setup Terraform Vars
+      - name: Preflight - validate credentials
         run: |
-          echo "TF_VAR_tenancy_ocid=${{ secrets.TENANCY_OCID }}" >> $GITHUB_ENV
-          echo "TF_VAR_user_ocid=${{ secrets.USER_OCID }}" >> $GITHUB_ENV
-          echo "TF_VAR_fp=${{ secrets.FP }}" >> $GITHUB_ENV
-          echo "TF_VAR_ssh_pub_key=${{ secrets.SSH_PUB_KEY }}" >> $GITHUB_ENV
+          set -euo pipefail
+          # 1) Key must be a valid, unencrypted PEM private key.
+          if ! openssl pkey -in pkey.pem -noout 2>/dev/null; then
+            echo "::error::PKEY is not a valid PEM private key. OCI needs an API"
+            echo "::error::signing key in PEM (RSA/PKCS8) form, NOT an OpenSSH key."
+            exit 1
+          fi
+          # 2) Computed fingerprint must match the FP secret.
+          computed="$(openssl rsa -pubout -outform DER -in pkey.pem 2>/dev/null \
+                       | openssl md5 -c | awk '{print $NF}')"
+          configured="${{ secrets.FP }}"
+          echo "computed fingerprint:   $computed"
+          echo "configured fingerprint: $configured"
+          if [ "$computed" != "$configured" ]; then
+            echo "::error::FP secret does not match the PKEY fingerprint."
+            echo "::error::Set FP to: $computed (or upload the matching public key in OCI)."
+            exit 1
+          fi
+          echo "Credentials preflight passed."
+
+      - name: Export Terraform variables
+        run: |
+          {
+            echo "TF_VAR_tenancy_ocid=${{ secrets.TENANCY_OCID }}"
+            echo "TF_VAR_user_ocid=${{ secrets.USER_OCID }}"
+            echo "TF_VAR_fp=${{ secrets.FP }}"
+            echo "TF_VAR_ssh_pub_key=${{ secrets.SSH_PUB_KEY }}"
+            echo "TF_VAR_wg_client_pubkey=${{ secrets.WG_CLIENT_PUBKEY }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
 
       - name: Terraform Init
-        run: terraform init
+        run: terraform init -input=false
+
+      - name: Terraform Validate
+        run: terraform validate -no-color
 
       - name: Terraform Plan
-        run: terraform plan
+        run: |
+          if [ "${{ inputs.action }}" = "destroy" ]; then
+            terraform plan -destroy -input=false -no-color
+          else
+            terraform plan -input=false -no-color
+          fi
 
       - name: Terraform Apply
-        id: apply
-        continue-on-error: true
-        run: terraform apply -auto-approve
-
-      - name: Check Terraform Apply Outcome
-        id: check
-        run: echo "apply_failed=${{ steps.apply.outcome == 'failure' }}" >> $GITHUB_ENV
+        if: inputs.action == 'apply'
+        run: terraform apply -auto-approve -input=false -no-color
 
       - name: Terraform Destroy
-        if: env.apply_failed == 'true'
-        id: failure-handler
-        run: |
-          echo "Terraform Apply failed. Initiating cleanup..."
-          terraform destroy -auto-approve
-          echo "cleanup_done=true" >> $GITHUB_ENV
+        if: inputs.action == 'destroy'
+        run: terraform destroy -auto-approve -input=false -no-color
+
+      - name: Outputs
+        if: inputs.action == 'apply'
+        run: terraform output -no-color || true

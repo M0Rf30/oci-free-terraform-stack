@@ -32,3 +32,7 @@ override.tf.json
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
+
+# OCI API signing key written by the CI workflow at runtime — never commit.
+pkey.pem
+*.pem
