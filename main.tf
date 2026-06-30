@@ -60,6 +60,12 @@ variable "bt_port" {
   default     = 11899
 }
 
+variable "dht_port" {
+  description = "TCP+UDP port for the Bitmagnet DHT crawler (inbound opened in the security list); 0 disables"
+  type        = number
+  default     = 3334
+}
+
 variable "wg_server_address" {
   description = "Relay address inside the tunnel (CIDR)"
   type        = string
@@ -90,6 +96,7 @@ module "oci-stack" {
   wg_client_pubkey  = var.wg_client_pubkey
   wg_listen_port    = var.wg_listen_port
   bt_port           = var.bt_port
+  dht_port          = var.dht_port
   wg_server_address = var.wg_server_address
   wg_client_address = var.wg_client_address
 }
