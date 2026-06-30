@@ -79,11 +79,16 @@ runcmd:
   - docker info
   - echo 'OCI Ampere A1 OracleLinux 9' >> /etc/motd
 %{ if wg_enabled ~}
-  # WireGuard relay: enable forwarding, defer firewalling to the OCI security
-  # list + wg-quick rules, then bring up the tunnel.
+  # WireGuard relay: enable forwarding, then fully remove firewalld. The OCI
+  # security list is the real firewall here; merely *disabling* the firewalld
+  # service leaves its nft table loaded, whose INPUT/FORWARD chains end in
+  # "reject admin-prohibited" and silently drop the WireGuard handshake (51820)
+  # and the DNATed BitTorrent forward (bt_port). Stop+mask flushes the table.
   - echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-wg-forward.conf
   - sysctl --system
-  - systemctl disable --now firewalld || true
+  - systemctl stop firewalld || true
+  - systemctl mask firewalld || true
+  - nft delete table inet firewalld 2>/dev/null || true
   - /opt/wg-relay/setup.sh
   - systemctl enable --now wg-quick@wg0
   - echo "WireGuard relay public key: $(cat /etc/wireguard/server.pub)" >> /etc/motd
