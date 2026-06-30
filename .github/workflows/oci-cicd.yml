@@ -29,6 +29,12 @@ env:
   # used only by the Terraform S3 state backend.
   AWS_ACCESS_KEY_ID: ${{ secrets.OCI_S3_ACCESS_KEY }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
+  # OCI's S3-compatible API rejects the AWS SDK's default "aws-chunked"
+  # encoding + checksum trailers ("501 NotImplemented"). Force checksums to be
+  # computed only when a request explicitly requires one, which avoids chunked
+  # uploads on PutObject (state writes).
+  AWS_REQUEST_CHECKSUM_CALCULATION: "WHEN_REQUIRED"
+  AWS_RESPONSE_CHECKSUM_VALIDATION: "WHEN_REQUIRED"
 
 jobs:
   terraform:
