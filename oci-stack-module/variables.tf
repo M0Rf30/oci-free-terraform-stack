@@ -75,6 +75,12 @@ variable "bt_port" {
   default     = 11899
 }
 
+variable "dht_port" {
+  description = "TCP+UDP port for the Bitmagnet DHT crawler; 0 disables the ingress rules"
+  type        = number
+  default     = 3334
+}
+
 variable "wg_server_address" {
   description = "Relay address inside the tunnel (CIDR)"
   type        = string

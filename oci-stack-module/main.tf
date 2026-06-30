@@ -194,6 +194,39 @@ resource "oci_core_security_list" "public-security-list" {
     }
   }
 
+  # Bitmagnet DHT crawler (inbound). Optional: set dht_port = 0 to disable.
+  dynamic "ingress_security_rules" {
+    for_each = var.dht_port > 0 ? [1] : []
+    content {
+      stateless   = false
+      source      = "0.0.0.0/0"
+      source_type = "CIDR_BLOCK"
+      protocol    = "6"
+      description = "Bitmagnet DHT TCP"
+
+      tcp_options {
+        min = var.dht_port
+        max = var.dht_port
+      }
+    }
+  }
+
+  dynamic "ingress_security_rules" {
+    for_each = var.dht_port > 0 ? [1] : []
+    content {
+      stateless   = false
+      source      = "0.0.0.0/0"
+      source_type = "CIDR_BLOCK"
+      protocol    = "17"
+      description = "Bitmagnet DHT UDP"
+
+      udp_options {
+        min = var.dht_port
+        max = var.dht_port
+      }
+    }
+  }
+
   ingress_security_rules {
     stateless   = false
     source      = "0.0.0.0/0"
