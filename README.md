@@ -72,14 +72,22 @@ The stack includes:
 
 ### Secrets required
 
-| Secret name | Description |
-|-------------|-------------|
-| `PAT_TOKEN` | Personal Access Token used by the pipeline to check out the repository |
-| `PKEY` | OCI SSH private key |
-| `TENANCY_OCID` | OCID of your tenancy |
-| `USER_OCID` | OCID of your user |
-| `FP` | Fingerprint for the user’s API key |
-| `SSH_PUB_KEY` | SSH public key added to the instances for access |
+| Secret name | Required | Description |
+|-------------|----------|-------------|
+| `PKEY` | yes | OCI **API signing** private key in PEM form (RSA/PKCS8). NOT an OpenSSH key — an OpenSSH key is the #1 cause of `401-NotAuthenticated`. The pipeline preflights this and prints the computed fingerprint if it mismatches `FP`. |
+| `FP` | yes | Fingerprint of the API key (must match `PKEY`). |
+| `TENANCY_OCID` | yes | OCID of your tenancy. |
+| `USER_OCID` | yes | OCID of your user. |
+| `SSH_PUB_KEY` | yes | SSH public key added to the instances (`opc` login). |
+| `OCI_S3_ACCESS_KEY` | yes | Access key of an OCI **Customer Secret Key** — used by the Terraform S3 state backend. |
+| `OCI_S3_SECRET_KEY` | yes | Secret of that Customer Secret Key. |
+| `WG_CLIENT_PUBKEY` | no | Base64 WireGuard public key of your home peer. Set it to turn the A1 instance into a WireGuard relay; leave unset for a plain stack. |
+
+> [!IMPORTANT]
+> Deploy into a region your tenancy is **subscribed to** (usually your home
+> region). Targeting an unsubscribed region returns `401-NotAuthenticated` on the
+> very first Identity call — this is a region problem, not a credentials problem.
+> The region defaults to `eu-milan-1`; override with the `region` variable.
 
 ## Automated deployment with GitHub Actions
 
@@ -101,6 +109,48 @@ When the workflow completes successfully, the **public IPs** of instances are sh
 
 - Username: `opc`  
 - Authentication: the SSH key you provided in `SSH_PUB_KEY`
+
+## WireGuard relay (inbound behind CGNAT)
+
+Set `WG_CLIENT_PUBKEY` and the **A1 instance** is provisioned as a WireGuard
+relay: it terminates a tunnel from your home machine and **DNATs the BitTorrent
+port** (`bt_port`, default `11899`) back to it. Outbound traffic from the home
+peer is masqueraded behind the relay's public IP, so trackers/peers see a stable
+address and inbound connections work even when your ISP uses carrier-grade NAT.
+
+Relevant variables (root `main.tf`):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `wg_client_pubkey` | `""` | Home peer's WireGuard public key; empty disables the relay |
+| `wg_listen_port` | `51820` | UDP port the relay listens on |
+| `bt_port` | `11899` | TCP+UDP port forwarded to the home peer |
+| `wg_server_address` | `10.200.0.1/24` | Relay tunnel address |
+| `wg_client_address` | `10.200.0.2` | Home-peer tunnel address |
+
+After apply, `terraform output wireguard_relay_public_ip` gives the endpoint.
+Fetch the relay's generated public key over SSH:
+
+```sh
+ssh opc@<relay-ip> 'sudo cat /etc/wireguard/server.pub'
+```
+
+Then on your home machine (`/etc/wireguard/wg1.conf`):
+
+```ini
+[Interface]
+Address = 10.200.0.2/32
+PrivateKey = <your home private key>
+
+[Peer]
+PublicKey = <relay server.pub>
+Endpoint = <relay-ip>:51820
+AllowedIPs = 10.200.0.1/32
+PersistentKeepalive = 25
+```
+
+Bring it up with `wg-quick up wg1`, point your BitTorrent client's listen port at
+`11899`, and inbound peers reach you through the relay.
 
 ## Quick start
 
